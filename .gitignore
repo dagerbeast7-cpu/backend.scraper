@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.env
+.env*
+.env.local
+.venv/
+venv/
+*.db
+exports/*.xlsx
+exports/*.xls
+pgdata/
+dashboard/
+.idea/
+.vscode/
+node_modules/
+.next/
