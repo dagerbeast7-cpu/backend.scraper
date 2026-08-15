@@ -1,3 +1,5 @@
+from urllib.parse import urlparse, urlunparse
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -7,8 +9,6 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg2://leadzen:leadzen@postgres:5432/leadzen"
 
     redis_url: str = "redis://redis:6379/0"
-    celery_broker_url: str = "redis://redis:6379/0"
-    celery_result_backend: str = "redis://redis:6379/1"
 
     scraper_provider: str = "playwright"  # playwright | google_places
     google_places_api_key: str = ""
@@ -20,5 +20,32 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
+    @property
+    def _redis_base(self) -> str:
+        """Base Redis URL (scheme + netloc) without path or db number."""
+        parsed = urlparse(self.redis_url)
+        return urlunparse((parsed.scheme, parsed.netloc, "", "", "", ""))
+
+    @property
+    def celery_broker_url(self) -> str:
+        """Always derived from redis_url — immune to stale .env values."""
+        return f"{self._redis_base}/0"
+
+    @property
+    def celery_result_backend(self) -> str:
+        """Always derived from redis_url — immune to stale .env values."""
+        return f"{self._redis_base}/1"
+
+    def log_redis_diagnostics(self) -> None:
+        """Print safe startup diagnostics (hostnames only, no credentials)."""
+        r = urlparse(self.redis_url)
+        b = urlparse(self.celery_broker_url)
+        k = urlparse(self.celery_result_backend)
+        print(f"REDIS_HOST={r.hostname}")
+        print(f"CELERY_BROKER_HOST={b.hostname}")
+        print(f"CELERY_BACKEND_HOST={k.hostname}")
+
 
 settings = Settings()
+settings.log_redis_diagnostics()
+
