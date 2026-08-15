@@ -10,7 +10,7 @@ def get_provider(provider_name: str | None = None) -> ScraperProvider:
 
         return GooglePlacesAPIProvider()
 
-    if name == "playwright":
+    if name in ("playwright", "google_maps"):
         from app.scraper.google_maps_playwright import GoogleMapsPlaywrightProvider
 
         return GoogleMapsPlaywrightProvider()
