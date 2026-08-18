@@ -20,6 +20,27 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
+    # Supabase Storage (Shared persistent Excel workbook)
+    supabase_url: str = ""
+    supabase_key: str = ""
+    supabase_storage_bucket: str = "leadzen-exports"
+    supabase_storage_object: str = "leadzen_prospects.xlsx"
+
+    @property
+    def effective_supabase_url(self) -> str:
+        """Return explicit supabase_url or derive project URL from database_url."""
+        if self.supabase_url:
+            return self.supabase_url.rstrip("/")
+        # Try to infer project ref from database_url e.g. postgres.euvcqzmwezarbdgpfszq:...
+        parsed = urlparse(self.database_url)
+        username = parsed.username or ""
+        if username.startswith("postgres.") and len(username.split(".")) > 1:
+            ref = username.split(".")[1]
+            return f"https://{ref}.supabase.co"
+        if parsed.hostname and "supabase.co" in parsed.hostname:
+            return f"https://{parsed.hostname.split('.')[0]}.supabase.co"
+        return ""
+
     @property
     def _redis_base(self) -> str:
         """Base Redis URL (scheme + netloc) without path or db number."""

@@ -93,135 +93,14 @@ def run_scrape_pipeline(
 @celery_app.task(name="app.workers.tasks.export_prospects_to_excel")
 def export_prospects_to_excel() -> dict:
     """
-    Export all prospects to an Excel file that cold callers can use.
-    Runs on a schedule (every hour by default) via Celery Beat.
-    The file is saved to /code/exports/leadzen_prospects.xlsx which
-    maps to the host's ./exports/ directory via the Docker volume mount.
+    Sync newly discovered prospects to the canonical caller workbook stored
+    in Supabase Storage. Existing rows and caller edits are strictly preserved.
     """
-    import os
-    from datetime import datetime, timezone
+    from app.storage.excel_storage import sync_prospects_to_storage_workbook
 
-    from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Font, PatternFill
-    from sqlalchemy import select
-
-    from app.db.base import get_session
-    from app.db.models import Prospect
-
-    export_dir = "/code/exports"
-    os.makedirs(export_dir, exist_ok=True)
-    filepath = os.path.join(export_dir, "leadzen_prospects.xlsx")
-
-    columns = [
-        ("Business Name", "business_name"),
-        ("Contact / Broker Name", "contact_name"),
-        ("Phone", "phone"),
-        ("WhatsApp", "whatsapp"),
-        ("Email", "email"),
-        ("City", "city"),
-        ("Area / Locality", "locality"),
-        ("Address", "address"),
-        ("Industry", "industry"),
-        ("Score", "score"),
-        ("Status", "status"),
-        ("Website", "website"),
-        ("Google Rating", "google_rating"),
-        ("Reviews", "review_count"),
-        ("WhatsApp Source", "whatsapp_source"),
-        ("Description", "business_description"),
-    ]
-
-    with get_session() as session:
-        prospects = session.execute(
-            select(Prospect).order_by(Prospect.score.desc())
-        ).scalars().all()
-
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Prospects"
-
-        # Header style
-        header_font = Font(bold=True, color="FFFFFF", size=11)
-        header_fill = PatternFill(start_color="2F5496", end_color="2F5496", fill_type="solid")
-
-        # Status mapping for caller options: NOT_CONTACTED, MAYBE, CONVERTED, LOST
-        STATUS_MAP = {
-            "NEW": "NOT_CONTACTED",
-            "ENRICHING": "NOT_CONTACTED",
-            "READY": "NOT_CONTACTED",
-            "CONTACTED": "NOT_CONTACTED",
-            "RESPONDED": "MAYBE",
-            "INTERESTED": "MAYBE",
-            "DEMO_BOOKED": "MAYBE",
-            "CUSTOMER": "CONVERTED",
-            "CONVERTED": "CONVERTED",
-            "LOST": "LOST",
-            "NOT_CONTACTED": "NOT_CONTACTED",
-            "MAYBE": "MAYBE",
-        }
-
-        # Write headers
-        for col_idx, (header, _) in enumerate(columns, 1):
-            cell = ws.cell(row=1, column=col_idx, value=header)
-            cell.font = header_font
-            cell.fill = header_fill
-            cell.alignment = Alignment(horizontal="center")
-
-        # Write data rows
-        for row_idx, prospect in enumerate(prospects, 2):
-            for col_idx, (_, attr) in enumerate(columns, 1):
-                value = getattr(prospect, attr, None)
-                # Convert enums to string & map status values
-                if hasattr(value, "value"):
-                    value = value.value
-                if attr == "status":
-                    value = STATUS_MAP.get(str(value).upper(), "NOT_CONTACTED")
-                ws.cell(row=row_idx, column=col_idx, value=value)
-
-        # Add Data Validation (Dropdown menu in Excel for Status column K)
-        from openpyxl.worksheet.datavalidation import DataValidation
-        dv = DataValidation(
-            type="list",
-            formula1='"NOT_CONTACTED,MAYBE,CONVERTED,LOST"',
-            allow_blank=True,
-        )
-        dv.error = "Please select a valid status: NOT_CONTACTED, MAYBE, CONVERTED, or LOST"
-        dv.errorTitle = "Invalid Status"
-        dv.prompt = "Choose calling status"
-        dv.promptTitle = "Status Options"
-
-        ws.add_data_validation(dv)
-        max_row = max(len(prospects) + 1, 500)
-        dv.add(f"K2:K{max_row}")
-
-        # Auto-fit column widths (approximate)
-        for col_idx, (header, _) in enumerate(columns, 1):
-            max_len = len(header)
-            for row in ws.iter_rows(min_row=2, min_col=col_idx, max_col=col_idx):
-                for cell in row:
-                    if cell.value:
-                        max_len = max(max_len, min(len(str(cell.value)), 50))
-            ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = max_len + 3
-
-        # Add metadata sheet with export timestamp
-        meta = wb.create_sheet("Export Info")
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        meta.append(["Last Updated", now])
-        meta.append(["Total Prospects", len(prospects)])
-        meta.append(["Status Options", "NOT_CONTACTED, MAYBE, CONVERTED, LOST"])
-        meta.append(["File", filepath])
-
-        # Freeze top row and enable auto-filter on the data sheet
-        ws.auto_filter.ref = ws.dimensions
-        ws.freeze_panes = "A2"
-
-        wb.save(filepath)
-
-    logger.info(
-        "Exported %d prospects to %s at %s",
-        len(prospects), filepath, now,
-    )
-    return {"exported": len(prospects), "file": filepath, "timestamp": now}
+    result = sync_prospects_to_storage_workbook()
+    logger.info("export_prospects_to_excel completed: %s", result)
+    return result
 
 
 @celery_app.task(name="app.workers.tasks.run_nightly_region_scrape")
@@ -255,7 +134,7 @@ def run_nightly_region_scrape(region_key: str) -> dict:
         except Exception:  # noqa: BLE001
             logger.exception("Nightly batch failed for city=%r area=%r", city, area)
 
-    # Automatically refresh Excel sheet after the region batch completes
+    # Incrementally update canonical caller workbook in Supabase Storage
     export_prospects_to_excel()
 
     result = {

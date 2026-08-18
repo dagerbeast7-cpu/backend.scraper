@@ -39,13 +39,5 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(hour=2, minute=30),  # 2:30 AM IST daily
         "kwargs": {"region_key": "bangalore"},
     },
-    "morning-final-excel-export": {
-        "task": "app.workers.tasks.export_prospects_to_excel",
-        "schedule": crontab(hour=6, minute=0),  # 6:00 AM IST daily
-    },
-    "hourly-excel-export": {
-        "task": "app.workers.tasks.export_prospects_to_excel",
-        "schedule": crontab(minute=0),  # Every hour on the hour
-    },
 }
 

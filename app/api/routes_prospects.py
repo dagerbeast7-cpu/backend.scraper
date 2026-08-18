@@ -118,22 +118,19 @@ def trigger_export():
 
 @router.get("/export/download")
 def download_export():
-    """Download the latest exported Excel file. Automatically generates it if missing."""
-    import os
-    from fastapi.responses import FileResponse
-    from app.workers.tasks import export_prospects_to_excel
+    """Download the latest canonical Excel file directly from Supabase Storage."""
+    from fastapi.responses import Response
+    from app.storage.excel_storage import get_canonical_workbook_bytes
 
-    filepath = "/code/exports/leadzen_prospects.xlsx"
-    if not os.path.exists(filepath):
-        try:
-            export_prospects_to_excel()
-        except Exception as err:
-            raise HTTPException(status_code=500, detail=f"Failed to generate Excel export: {err}")
+    try:
+        data = get_canonical_workbook_bytes()
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch canonical Excel export: {err}")
 
-    return FileResponse(
-        filepath,
+    return Response(
+        content=data,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename="leadzen_prospects.xlsx",
+        headers={"Content-Disposition": 'attachment; filename="leadzen_prospects.xlsx"'},
     )
 
 
