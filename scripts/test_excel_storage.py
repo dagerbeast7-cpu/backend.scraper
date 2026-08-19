@@ -224,6 +224,47 @@ try:
 except RuntimeError as exc:
     check("Unconfigured client raised RuntimeError cleanly", "SUPABASE_KEY" in str(exc))
 
+# ------------------------------------------------------------------------------
+# TEST 7: Manual Scrape Pipeline Updates Canonical Workbook (1 new + 4 existing)
+# ------------------------------------------------------------------------------
+print("\n--- TEST 7: Manual scrape incremental update & deduplication ---")
+scrape_batch = [
+    leads_batch_1[0],  # Alpha (already in sheet with CLOSED)
+    leads_batch_1[1],  # Beta (already in sheet)
+    leads_batch_3[3],  # Zeta (already in sheet)
+    leads_batch_3[4],  # Eta (already in sheet)
+    make_dummy_prospect("Theta Realty", "+91 98200 88888", city="Mumbai", google_maps_id="ChIJ_theta"),
+]
+
+# Simulate newly_created_prospects logic from run_scrape_pipeline:
+# Only Theta is new, the other 4 already existed
+newly_created = [scrape_batch[4]]  # Theta only
+
+current_wb_bytes = mock_storage.download_file()
+wb_loaded_7 = load_workbook(io.BytesIO(current_wb_bytes))
+appended_7 = append_new_leads(wb_loaded_7, newly_created)
+
+buf7 = io.BytesIO()
+wb_loaded_7.save(buf7)
+mock_storage.upload_file(buf7.getvalue())
+
+# Verify
+wb_after_7 = load_workbook(io.BytesIO(mock_storage.download_file()))
+ws7 = wb_after_7["Prospects"]
+data_rows_7 = [row for row in ws7.iter_rows(min_row=2, values_only=True) if any(row)]
+
+check("Appended exactly 1 new row for Theta Realty", appended_7 == 1)
+check("Total rows in workbook is now 8 (7 existing + 1 new)", len(data_rows_7) == 8)
+check("Row 1 'CLOSED' status is STILL preserved", data_rows_7[0][10] == "CLOSED")
+check("Row 8 is 'Theta Realty' with status 'NOT_CONTACTED'", data_rows_7[7][0] == "Theta Realty" and data_rows_7[7][10] == "NOT_CONTACTED")
+
+# Now re-run same scrape with NO new prospects (total_seen=5, created=0, updated=5)
+# newly_created is empty -> append_new_leads not called or called with empty list
+wb_loaded_empty = load_workbook(io.BytesIO(mock_storage.download_file()))
+appended_empty = append_new_leads(wb_loaded_empty, [])
+check("Re-running scrape with 0 new leads appends 0 rows", appended_empty == 0)
+check("Total rows remains 8", len(wb_loaded_empty["Prospects"]["A"]) - 1 == 8)
+
 print("\n" + "=" * 80)
 if failures:
     print(f"FAILED: {len(failures)} test(s) failed: {', '.join(failures)}")
@@ -232,5 +273,6 @@ else:
     print("ALL TESTS PASSED SUCCESSFULLY!")
     print("=" * 80)
     sys.exit(0)
+
 
 

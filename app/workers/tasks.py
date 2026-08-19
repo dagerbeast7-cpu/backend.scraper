@@ -36,6 +36,7 @@ def run_scrape_pipeline(
     created_count = 0
     updated_count = 0
     total_seen = 0
+    newly_created_prospects: list[Prospect] = []
 
     with get_session() as session:
         dedup = DedupEngine(session)
@@ -58,6 +59,7 @@ def run_scrape_pipeline(
                         prospect, created = dedup.upsert(lead)
                         if created:
                             created_count += 1
+                            newly_created_prospects.append(prospect)
                         else:
                             updated_count += 1
 
@@ -77,6 +79,15 @@ def run_scrape_pipeline(
                         logger.exception("Failed to process lead %s, rolled back session", lead.business_name)
         finally:
             enrichment.close()
+
+        # If new prospects were created, append them to the canonical Supabase Storage workbook
+        if newly_created_prospects:
+            try:
+                from app.storage.excel_storage import sync_prospects_to_storage_workbook
+
+                sync_prospects_to_storage_workbook(newly_created_prospects)
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to sync newly created prospects to canonical workbook")
 
     result = {
         "city": city,

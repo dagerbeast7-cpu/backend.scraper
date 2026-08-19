@@ -402,8 +402,8 @@ def sync_prospects_to_storage_workbook(
     existing_bytes = client.download_file()
 
     with get_session() as session:
-        if candidate_prospects is None:
-            # Query all prospects ordered by score
+        if candidate_prospects is None or existing_bytes is None:
+            # Query all prospects ordered by score if initial creation or no candidates passed
             prospects_to_check = session.execute(
                 select(Prospect).order_by(Prospect.score.desc())
             ).scalars().all()
