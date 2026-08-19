@@ -78,9 +78,8 @@ class SupabaseStorageClient:
         bucket_name: str | None = None,
     ):
         self.base_url = (base_url or settings.effective_supabase_url).rstrip("/")
-        self.api_key = api_key or settings.supabase_key
+        self.api_key = api_key or settings.effective_supabase_key
         self.bucket_name = bucket_name or settings.supabase_storage_bucket
-        self._local_fallback_dir = "/code/exports"
 
     @property
     def is_configured(self) -> bool:
@@ -95,10 +94,20 @@ class SupabaseStorageClient:
             h.update(extra)
         return h
 
+    def _require_configured(self) -> None:
+        if not self.is_configured:
+            missing = []
+            if not self.base_url:
+                missing.append("SUPABASE_URL (or DATABASE_URL with Supabase project host)")
+            if not self.api_key:
+                missing.append("SUPABASE_KEY (or SUPABASE_SERVICE_ROLE_KEY)")
+            err_msg = f"Supabase Storage is not configured. Missing: {', '.join(missing)}"
+            logger.error(err_msg)
+            raise RuntimeError(err_msg)
+
     def ensure_bucket_exists(self) -> None:
         """Create bucket if it does not already exist."""
-        if not self.is_configured:
-            return
+        self._require_configured()
         url = f"{self.base_url}/storage/v1/bucket"
         try:
             with httpx.Client(timeout=10.0) as client:
@@ -109,45 +118,56 @@ class SupabaseStorageClient:
                 )
                 if res.status_code in (200, 201):
                     logger.info("Created Supabase Storage bucket %r", self.bucket_name)
+                elif res.status_code in (400, 409):
+                    logger.debug("Supabase Storage bucket %r already exists (HTTP %d)", self.bucket_name, res.status_code)
+                else:
+                    logger.warning(
+                        "Supabase Storage bucket check returned HTTP %d: %s",
+                        res.status_code,
+                        res.text[:200],
+                    )
         except Exception as exc:
-            logger.debug("ensure_bucket_exists check: %s", exc)
+            logger.warning("ensure_bucket_exists exception: %s", exc)
 
     def download_file(self, object_name: str | None = None) -> bytes | None:
-        """Download file bytes from storage bucket. Returns None if absent."""
+        """
+        Download file bytes from storage bucket.
+        Returns None if object does not exist (404/not found).
+        Raises RuntimeError on authentication/server errors.
+        """
+        self._require_configured()
         name = object_name or settings.supabase_storage_object
-        if not self.is_configured:
-            return self._download_local_fallback(name)
+        url = f"{self.base_url}/storage/v1/object/{self.bucket_name}/{name}"
 
-        url = f"{self.base_url}/storage/v1/object/authenticated/{self.bucket_name}/{name}"
         try:
             with httpx.Client(timeout=30.0) as client:
                 res = client.get(url, headers=self._headers())
                 if res.status_code == 200:
+                    logger.info("Downloaded %s (%d bytes) from Supabase Storage", name, len(res.content))
                     return res.content
                 if res.status_code in (400, 404):
-                    # Also try unauthenticated if public
-                    pub_url = f"{self.base_url}/storage/v1/object/{self.bucket_name}/{name}"
-                    pub_res = client.get(pub_url, headers=self._headers())
-                    if pub_res.status_code == 200:
-                        return pub_res.content
-                    return None
-                logger.warning(
-                    "Supabase Storage download returned HTTP %d for %s",
-                    res.status_code,
-                    name,
-                )
-                return None
-        except Exception as exc:
-            logger.warning("Failed to download from Supabase Storage: %s. Falling back to local.", exc)
-            return self._download_local_fallback(name)
+                    # Check if body indicates absent object vs genuine error
+                    body_text = res.text.lower()
+                    if "not found" in body_text or "not_found" in body_text or res.status_code == 404:
+                        logger.info("Object %s not found in bucket %s (will be created)", name, self.bucket_name)
+                        return None
+                err = f"Supabase Storage download failed with HTTP {res.status_code}: {res.text[:300]}"
+                logger.error(err)
+                raise RuntimeError(err)
+        except httpx.RequestError as exc:
+            err = f"Supabase Storage network error during download: {exc}"
+            logger.error(err)
+            raise RuntimeError(err) from exc
 
     def upload_file(self, data: bytes, object_name: str | None = None) -> bool:
-        """Upload file bytes to storage bucket atomically using x-upsert."""
+        """
+        Upload file bytes to storage bucket atomically using x-upsert.
+        Raises RuntimeError on authentication/server errors.
+        """
+        self._require_configured()
         name = object_name or settings.supabase_storage_object
-        if not self.is_configured:
-            return self._upload_local_fallback(data, name)
-
         self.ensure_bucket_exists()
+
         url = f"{self.base_url}/storage/v1/object/{self.bucket_name}/{name}"
         headers = self._headers({
             "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -159,32 +179,19 @@ class SupabaseStorageClient:
                 if res.status_code in (200, 201):
                     logger.info("Successfully uploaded %s (%d bytes) to Supabase Storage", name, len(data))
                     return True
-                logger.error("Supabase Storage upload failed with HTTP %d: %s", res.status_code, res.text)
-                # Fallback save locally too
-                self._upload_local_fallback(data, name)
-                return False
-        except Exception as exc:
-            logger.error("Failed to upload to Supabase Storage: %s", exc)
-            self._upload_local_fallback(data, name)
-            return False
-
-    def _download_local_fallback(self, name: str) -> bytes | None:
-        local_path = os.path.join(self._local_fallback_dir, name)
-        if os.path.exists(local_path):
-            with open(local_path, "rb") as f:
-                return f.read()
-        return None
-
-    def _upload_local_fallback(self, data: bytes, name: str) -> bool:
-        try:
-            os.makedirs(self._local_fallback_dir, exist_ok=True)
-            local_path = os.path.join(self._local_fallback_dir, name)
-            with open(local_path, "wb") as f:
-                f.write(data)
-            return True
-        except Exception as exc:
-            logger.debug("Local fallback write failed: %s", exc)
-            return False
+                # If POST rejected x-upsert with 400 on older versions, retry with PUT
+                if res.status_code == 400:
+                    put_res = client.put(url, headers=headers, content=data)
+                    if put_res.status_code in (200, 201):
+                        logger.info("Successfully updated %s (%d bytes) via PUT", name, len(data))
+                        return True
+                err = f"Supabase Storage upload failed with HTTP {res.status_code}: {res.text[:300]}"
+                logger.error(err)
+                raise RuntimeError(err)
+        except httpx.RequestError as exc:
+            err = f"Supabase Storage network error during upload: {exc}"
+            logger.error(err)
+            raise RuntimeError(err) from exc
 
 
 def _build_identity_keys(prospect: Prospect) -> tuple[str | None, str | None, str | None, str | None]:
@@ -432,25 +439,19 @@ def get_canonical_workbook_bytes(storage_client: SupabaseStorageClient | None = 
     """
     Fetch the latest canonical workbook bytes from Supabase Storage.
     If absent, generates initial workbook and uploads it.
+    Fails clearly if Supabase Storage cannot be accessed or updated.
     """
     client = storage_client or SupabaseStorageClient()
     data = client.download_file()
     if data is not None:
         return data
 
-    # Absent -> Generate initial workbook, upload, and return
+    # Absent -> Generate initial workbook, upload to Supabase Storage, and return
     res = sync_prospects_to_storage_workbook(storage_client=client)
-    logger.info("Generated initial workbook on-demand: %s", res)
+    logger.info("Generated and uploaded initial workbook: %s", res)
     refreshed = client.download_file()
     if refreshed is not None:
         return refreshed
 
-    # In-memory generation fallback
-    with get_session() as session:
-        all_prospects = session.execute(
-            select(Prospect).order_by(Prospect.score.desc())
-        ).scalars().all()
-        wb = create_initial_workbook(all_prospects)
-        buf = io.BytesIO()
-        wb.save(buf)
-        return buf.getvalue()
+    raise RuntimeError("Failed to verify canonical workbook in Supabase Storage after upload.")
+

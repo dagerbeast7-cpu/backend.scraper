@@ -206,13 +206,23 @@ check("All 3 duplicate variants were recognized and skipped (appended = 0)", app
 # TEST 5: Storage Persistence across container restarts & API Download
 # ------------------------------------------------------------------------------
 print("\n--- TEST 5: Container restart simulation & API download ---")
-# Simulate new container spinning up with fresh memory, accessing mock_storage
 fresh_container_storage = mock_storage
 downloaded_bytes = fresh_container_storage.download_file()
 
 check("Downloaded bytes is valid non-empty byte stream", downloaded_bytes is not None and len(downloaded_bytes) > 0)
 downloaded_wb = load_workbook(io.BytesIO(downloaded_bytes))
 check("Downloaded workbook has 7 rows and preserves 'CLOSED' status", len(downloaded_wb["Prospects"]["A"]) - 1 == 7 and downloaded_wb["Prospects"]["K2"].value == "CLOSED")
+
+# ------------------------------------------------------------------------------
+# TEST 6: Strict Server-Side Key Configuration (Fails Clearly when Unconfigured)
+# ------------------------------------------------------------------------------
+print("\n--- TEST 6: Strict server-side key check (fails clearly when unconfigured) ---")
+unconfigured_client = SupabaseStorageClient(base_url="", api_key="")
+try:
+    unconfigured_client.download_file()
+    check("Unconfigured client raises RuntimeError", False)
+except RuntimeError as exc:
+    check("Unconfigured client raised RuntimeError cleanly", "SUPABASE_KEY" in str(exc))
 
 print("\n" + "=" * 80)
 if failures:
@@ -222,3 +232,5 @@ else:
     print("ALL TESTS PASSED SUCCESSFULLY!")
     print("=" * 80)
     sys.exit(0)
+
+

@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     supabase_storage_object: str = "leadzen_prospects.xlsx"
 
     @property
+    def effective_supabase_key(self) -> str:
+        """
+        Return explicitly configured SUPABASE_KEY or SUPABASE_SERVICE_ROLE_KEY.
+        Never substitutes publishable/anon keys for privileged storage operations.
+        """
+        import os
+        return self.supabase_key or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+
+    @property
     def effective_supabase_url(self) -> str:
         """Return explicit supabase_url or derive project URL from database_url."""
         if self.supabase_url:
@@ -57,16 +66,22 @@ class Settings(BaseSettings):
         """Always derived from redis_url — immune to stale .env values."""
         return f"{self._redis_base}/1"
 
-    def log_redis_diagnostics(self) -> None:
-        """Print safe startup diagnostics (hostnames only, no credentials)."""
+    def log_diagnostics(self) -> None:
+        """Print safe startup diagnostics (hostnames and config presence only, no secrets)."""
         r = urlparse(self.redis_url)
         b = urlparse(self.celery_broker_url)
         k = urlparse(self.celery_result_backend)
+        s = urlparse(self.effective_supabase_url) if self.effective_supabase_url else None
         print(f"REDIS_HOST={r.hostname}")
         print(f"CELERY_BROKER_HOST={b.hostname}")
         print(f"CELERY_BACKEND_HOST={k.hostname}")
+        print(f"SUPABASE_HOST={s.hostname if s else None}")
+        print(f"SUPABASE_KEY_CONFIGURED={bool(self.effective_supabase_key)}")
+        print(f"STORAGE_BUCKET={self.supabase_storage_bucket}")
+        print(f"STORAGE_OBJECT={self.supabase_storage_object}")
 
 
 settings = Settings()
-settings.log_redis_diagnostics()
+settings.log_diagnostics()
+
 
