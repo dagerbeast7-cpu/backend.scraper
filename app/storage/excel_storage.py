@@ -286,11 +286,40 @@ def _update_meta_sheet(wb: Workbook, total_prospects: int) -> None:
     meta.append(["Storage Location", f"{settings.supabase_storage_bucket}/{settings.supabase_storage_object}"])
 
 
+def list_no_phone_rows(wb: Workbook) -> list[dict]:
+    """
+    Identify existing rows in the Prospects sheet that have no usable phone number.
+    Returns list of dicts with row number, business name, city, and raw phone.
+    """
+    ws = wb["Prospects"] if "Prospects" in wb.sheetnames else wb.active
+    no_phone_rows = []
+    for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+        if not any(row):
+            continue
+        bus_name = str(row[0]).strip() if len(row) > 0 and row[0] else ""
+        raw_phone = str(row[2]).strip() if len(row) > 2 and row[2] else None
+        city = str(row[5]).strip() if len(row) > 5 and row[5] else ""
+        if not raw_phone or normalize_phone(raw_phone) is None:
+            no_phone_rows.append({
+                "row_number": row_idx,
+                "business_name": bus_name,
+                "raw_phone": raw_phone,
+                "city": city,
+            })
+    return no_phone_rows
+
+
 def create_initial_workbook(prospects: Sequence[Prospect]) -> Workbook:
-    """Create the initial formatted canonical workbook from scratch."""
+    """Create the initial formatted canonical workbook containing ONLY leads with usable phone numbers."""
     wb = Workbook()
     ws = wb.active
     ws.title = "Prospects"
+
+    # Filter strictly to prospects with a usable phone number and business name
+    eligible_prospects = [
+        p for p in prospects
+        if p.business_name and normalize_phone(p.phone) is not None
+    ]
 
     # 1. Write Headers
     for col_idx, (header, _) in enumerate(EXCEL_COLUMNS, 1):
@@ -300,17 +329,20 @@ def create_initial_workbook(prospects: Sequence[Prospect]) -> Workbook:
         cell.alignment = Alignment(horizontal="center")
 
     # 2. Write Data Rows
-    for row_idx, prospect in enumerate(prospects, 2):
+    for row_idx, prospect in enumerate(eligible_prospects, 2):
+        normalized_phone = normalize_phone(prospect.phone)
         for col_idx, (_, attr) in enumerate(EXCEL_COLUMNS, 1):
             val = getattr(prospect, attr, None)
             if hasattr(val, "value"):
                 val = val.value
             if attr == "status":
                 val = STATUS_MAP.get(str(val).upper(), "NOT_CONTACTED")
+            elif attr == "phone":
+                val = normalized_phone
             cell = ws.cell(row=row_idx, column=col_idx, value=val)
             cell.font = DATA_FONT
 
-    max_row = max(len(prospects) + 1, 1)
+    max_row = max(len(eligible_prospects) + 1, 1)
     _apply_validation(ws, max_row)
 
     # 3. Auto-fit column widths
@@ -327,14 +359,15 @@ def create_initial_workbook(prospects: Sequence[Prospect]) -> Workbook:
     ws.freeze_panes = "A2"
 
     # Metadata sheet
-    _update_meta_sheet(wb, len(prospects))
+    _update_meta_sheet(wb, len(eligible_prospects))
     return wb
 
 
 def append_new_leads(wb: Workbook, candidates: Iterable[Prospect]) -> int:
     """
-    Append only genuinely new prospects to the existing workbook.
+    Append only genuinely new prospects with USABLE PHONE NUMBERS to the existing workbook.
     NEVER overwrites existing rows or caller edits.
+    Skips candidates without a usable phone number.
     Returns count of new rows appended.
     """
     ws = wb["Prospects"] if "Prospects" in wb.sheetnames else wb.active
@@ -344,19 +377,27 @@ def append_new_leads(wb: Workbook, candidates: Iterable[Prospect]) -> int:
     current_row = ws.max_row
 
     for prospect in candidates:
-        g_id, phone, website, name_city = _build_identity_keys(prospect)
+        # Rule: Only prospects with a usable phone number are eligible for Excel
+        if not prospect.business_name:
+            continue
+
+        normalized_phone = normalize_phone(prospect.phone)
+        if not normalized_phone:
+            continue
+
+        g_id, _, website, name_city = _build_identity_keys(prospect)
 
         # 4-tier match strategy
         if g_id and g_id in existing_g_ids:
             continue
-        if phone and phone in existing_phones:
+        if normalized_phone in existing_phones:
             continue
         if website and website in existing_websites:
             continue
         if name_city and name_city in existing_name_cities:
             continue
 
-        # Genuinely new -> Append row
+        # Genuinely new with usable phone -> Append row
         current_row += 1
         for col_idx, (_, attr) in enumerate(EXCEL_COLUMNS, 1):
             val = getattr(prospect, attr, None)
@@ -364,14 +405,15 @@ def append_new_leads(wb: Workbook, candidates: Iterable[Prospect]) -> int:
                 val = val.value
             if attr == "status":
                 val = "NOT_CONTACTED"  # Initial caller status for newly appended leads
+            elif attr == "phone":
+                val = normalized_phone
             cell = ws.cell(row=current_row, column=col_idx, value=val)
             cell.font = DATA_FONT
 
         # Add new keys to lookup sets so intra-batch duplicates are skipped
         if g_id:
             existing_g_ids.add(g_id)
-        if phone:
-            existing_phones.add(phone)
+        existing_phones.add(normalized_phone)
         if website:
             existing_websites.add(website)
         if name_city:

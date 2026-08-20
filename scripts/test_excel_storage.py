@@ -265,6 +265,35 @@ appended_empty = append_new_leads(wb_loaded_empty, [])
 check("Re-running scrape with 0 new leads appends 0 rows", appended_empty == 0)
 check("Total rows remains 8", len(wb_loaded_empty["Prospects"]["A"]) - 1 == 8)
 
+# ------------------------------------------------------------------------------
+# TEST 8: Usable Phone Rule (Only prospects with valid phone are appended)
+# ------------------------------------------------------------------------------
+print("\n--- TEST 8: Usable Phone Filter Rule ---")
+from app.storage.excel_storage import list_no_phone_rows
+
+lead_valid_phone = make_dummy_prospect("Valid Phone Realty", "+91 98200 99999", city="Mumbai", google_maps_id="ChIJ_valid")
+lead_no_phone = make_dummy_prospect("No Phone Realty", None, city="Mumbai", google_maps_id="ChIJ_nophone")
+lead_empty_phone = make_dummy_prospect("Empty Phone Realty", "", city="Mumbai", google_maps_id="ChIJ_empty")
+lead_invalid_phone = make_dummy_prospect("Invalid Phone Realty", "12345", city="Mumbai", google_maps_id="ChIJ_invalid")
+
+wb_test8 = load_workbook(io.BytesIO(mock_storage.download_file()))
+initial_row_count = len(wb_test8["Prospects"]["A"]) - 1  # Currently 8
+
+# Try appending all 4 leads
+appended_8 = append_new_leads(wb_test8, [lead_valid_phone, lead_no_phone, lead_empty_phone, lead_invalid_phone])
+
+check("Only 1 lead with usable phone was appended (3 no-phone leads skipped)", appended_8 == 1)
+check("Total rows in workbook is now 9 (8 existing + 1 valid)", len(wb_test8["Prospects"]["A"]) - 1 == 9)
+check("Appended row has valid normalized phone", wb_test8["Prospects"]["C10"].value == "+919820099999")
+
+# Re-attempt appending the same valid lead (duplicate test)
+appended_dup = append_new_leads(wb_test8, [lead_valid_phone])
+check("Duplicate valid lead is skipped (0 appended)", appended_dup == 0)
+
+# Check list_no_phone_rows returns 0 for our canonical workbook
+no_phone_in_sheet = list_no_phone_rows(wb_test8)
+check("Canonical sheet has 0 no-phone rows", len(no_phone_in_sheet) == 0)
+
 print("\n" + "=" * 80)
 if failures:
     print(f"FAILED: {len(failures)} test(s) failed: {', '.join(failures)}")
@@ -273,6 +302,7 @@ else:
     print("ALL TESTS PASSED SUCCESSFULLY!")
     print("=" * 80)
     sys.exit(0)
+
 
 
 
