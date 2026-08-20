@@ -497,3 +497,58 @@ def get_canonical_workbook_bytes(storage_client: SupabaseStorageClient | None = 
 
     raise RuntimeError("Failed to verify canonical workbook in Supabase Storage after upload.")
 
+
+def cleanup_canonical_storage_workbook(storage_client: SupabaseStorageClient | None = None) -> dict:
+    """
+    ONE-TIME operation:
+    1. Load leadzen_prospects.xlsx from Supabase Storage.
+    2. Remove only rows where phone is missing/invalid.
+    3. Preserve all existing rows with usable phones and all caller edits.
+    4. Upload the cleaned workbook back to Supabase Storage.
+    5. Returns statistics: rows_before, rows_removed, rows_remaining, usable_phone_rows.
+    """
+    client = storage_client or SupabaseStorageClient()
+    file_bytes = client.download_file()
+    if file_bytes is None:
+        raise RuntimeError("No canonical workbook found in Supabase Storage to clean up.")
+
+    wb = load_workbook(filename=io.BytesIO(file_bytes))
+    ws = wb["Prospects"] if "Prospects" in wb.sheetnames else wb.active
+
+    rows_before = max(ws.max_row - 1, 0)
+    removed_count = 0
+
+    # Iterate from bottom to top to preserve row indices
+    for row_idx in range(ws.max_row, 1, -1):
+        raw_phone = ws.cell(row=row_idx, column=3).value  # Column C is Phone
+        p_norm = normalize_phone(str(raw_phone)) if raw_phone else None
+        if not p_norm:
+            removed_count += 1
+            ws.delete_rows(row_idx, 1)
+
+    rows_remaining = max(ws.max_row - 1, 0)
+
+    # Re-apply validation and update metadata sheet
+    if rows_remaining > 0:
+        _apply_validation(ws, ws.max_row)
+        ws.auto_filter.ref = f"A1:{ws.cell(row=ws.max_row, column=len(EXCEL_COLUMNS)).coordinate}"
+
+    _update_meta_sheet(wb, rows_remaining)
+
+    # Save to buffer and upload back to Supabase Storage atomically
+    out_buf = io.BytesIO()
+    wb.save(out_buf)
+    uploaded = client.upload_file(out_buf.getvalue())
+
+    result = {
+        "rows_before": rows_before,
+        "rows_removed": removed_count,
+        "rows_remaining": rows_remaining,
+        "usable_phone_rows": rows_remaining,
+        "uploaded_to_storage": uploaded,
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+    }
+    logger.info("cleanup_canonical_storage_workbook finished: %s", result)
+    return result
+
+

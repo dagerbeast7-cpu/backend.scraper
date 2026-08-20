@@ -292,7 +292,41 @@ check("Duplicate valid lead is skipped (0 appended)", appended_dup == 0)
 
 # Check list_no_phone_rows returns 0 for our canonical workbook
 no_phone_in_sheet = list_no_phone_rows(wb_test8)
-check("Canonical sheet has 0 no-phone rows", len(no_phone_in_sheet) == 0)
+# ------------------------------------------------------------------------------
+# TEST 9: One-Time Cleanup Function (removes no-phone rows, preserves valid & caller edits)
+# ------------------------------------------------------------------------------
+print("\n--- TEST 9: One-Time Canonical Workbook Cleanup ---")
+from app.storage.excel_storage import cleanup_canonical_storage_workbook
+
+# Inject two dummy no-phone rows into the mock storage workbook
+wb_dirty = load_workbook(io.BytesIO(mock_storage.download_file()))
+ws_dirty = wb_dirty["Prospects"]
+r_idx1 = ws_dirty.max_row + 1
+ws_dirty.cell(row=r_idx1, column=1, value="Junk Lead 1")
+ws_dirty.cell(row=r_idx1, column=3, value=None)
+r_idx2 = ws_dirty.max_row + 1
+ws_dirty.cell(row=r_idx2, column=1, value="Junk Lead 2")
+ws_dirty.cell(row=r_idx2, column=3, value="123")
+
+dirty_buf = io.BytesIO()
+wb_dirty.save(dirty_buf)
+mock_storage.upload_file(dirty_buf.getvalue())
+
+dirty_count = len(wb_dirty["Prospects"]["A"]) - 1  # 8 + 2 = 10
+check("Injected 2 no-phone rows (total 10 rows)", dirty_count == 10)
+
+# Run cleanup
+cleanup_res = cleanup_canonical_storage_workbook(storage_client=mock_storage)
+
+check("Cleanup removed exactly 2 rows", cleanup_res["rows_removed"] == 2)
+check("Cleanup reports 8 remaining rows", cleanup_res["rows_remaining"] == 8)
+check("Cleanup uploaded back to storage", cleanup_res["uploaded_to_storage"] is True)
+
+# Verify cleaned workbook
+wb_cleaned = load_workbook(io.BytesIO(mock_storage.download_file()))
+check("Cleaned workbook in storage has 8 data rows", len(wb_cleaned["Prospects"]["A"]) - 1 == 8)
+check("Caller-edited 'CLOSED' status is STILL preserved", wb_cleaned["Prospects"]["K2"].value == "CLOSED")
+check("0 no-phone rows remain in cleaned sheet", len(list_no_phone_rows(wb_cleaned)) == 0)
 
 print("\n" + "=" * 80)
 if failures:
@@ -302,6 +336,7 @@ else:
     print("ALL TESTS PASSED SUCCESSFULLY!")
     print("=" * 80)
     sys.exit(0)
+
 
 
 

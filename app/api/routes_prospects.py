@@ -134,6 +134,19 @@ def download_export():
     )
 
 
+@router.post("/export/cleanup-no-phone")
+def trigger_cleanup_no_phone():
+    """One-time administrative endpoint: removes no-phone rows from the canonical Supabase Storage workbook."""
+    from app.storage.excel_storage import cleanup_canonical_storage_workbook
+
+    try:
+        res = cleanup_canonical_storage_workbook()
+        return res
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=f"Failed to clean up canonical workbook: {err}")
+
+
+
 @router.post("/import-excel")
 def import_excel(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """
